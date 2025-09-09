@@ -1,0 +1,53 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - "-listenAddr"
+      - ":4317"
+      - "-attributeKey"
+      - "foo"
+      - "-window"
+      - "5s"
+      - "-maxQueue"
+      - "100000"
+      - "-outputFile"
+      - "/data/snapshots.jsonl"
+    ports:
+      - "4317:4317"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  telemetrygen-alpha:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest
+    depends_on:
+      - app
+    command:
+      - logs
+      - --otlp-endpoint
+      - app:4317
+      - --otlp-insecure
+      - --duration
+      - "inf"
+      - --rate
+      - "25"
+      - '--otlp-attributes=foo="alpha"'
+    restart: unless-stopped
+
+  telemetrygen-beta:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest
+    depends_on:
+      - app
+    command:
+      - logs
+      - --otlp-endpoint
+      - app:4317
+      - --otlp-insecure
+      - --duration
+      - "inf"
+      - --rate
+      - "10"
+      - '--otlp-attributes=foo="beta"'
+    restart: unless-stopped

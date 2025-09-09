@@ -1,0 +1,17 @@
+# Build context exclusions
+.git
+.github
+.vscode
+node_modules
+bin
+dist
+
+# Test and docs (not needed for building the binary)
+test
+docs
+
+# Go build caches
+*.out
+*.test
+coverage.*
+
