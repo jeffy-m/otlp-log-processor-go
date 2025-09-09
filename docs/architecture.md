@@ -14,7 +14,7 @@ flowchart TD
     Orch[internal/orchestrator\nService (instance-scoped)]
     Extract[internal/otlp\nExtractAttrs(key,log,scope,res)]
     Queue[(Ingestion Queue\nchan Event)]
-    Agg[internal/agg\nAggregator (goroutine\n+ticker windowing)]
+    Agg[internal/aggregator\nAggregator (goroutine\n+ticker windowing)]
     Sink[internal/sink\nJSONSink (stdout)]
   end
 
@@ -27,7 +27,7 @@ flowchart TD
 
   LogsSvc -->|for each record| Extract
   Extract -->|value or "unknown"| Queue
-  Agg <-->|non-blocking Enqueue| Queue
+  Agg <-->|non-blocking Enqueue/EnqueueBatch| Queue
 
   %% Telemetry (observability) paths
   GRPC -. traces/metrics .-> OTel
@@ -58,7 +58,7 @@ sequenceDiagram
   loop each Resource/Scope/LogRecord
     Logs->>EA: ExtractAttrs(key, log, scope, resource)
     EA-->>Logs: value | "unknown"
-    Logs->>Agg: Enqueue(value) (non-blocking)
+    Logs->>Agg: EnqueueBatch(values) (non-blocking)
     alt queue full
       Logs->>Agg: RecordDrop(1)
       Logs-->>Logs: rejected++ (PartialSuccess)

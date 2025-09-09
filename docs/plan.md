@@ -31,12 +31,13 @@
   - `-listenAddr` (string, default `localhost:4317`).
   - `-maxReceiveMessageSize` (int, default `16MiB`).
   - `-attributeKey` (string, required). Key to count per value.
-  - `-window` (duration, default e.g. `10s`).
-  - `-maxQueue` (int, default e.g. `100_000`).
-  - `-outputFormat` (`json`|`log`, default `json`). Controls sink rendering.
-  - `-logLevel` (`info`|`debug`|`warn`, default `info`).
+  - `-window` (duration, default `10s`).
+  - `-maxQueue` (int, default `100_000`).
+  - `-outputFormat` (string, default `json`). Present but currently only JSON is implemented; non-`json` values are ignored.
+  - `-outputFile` (string, default empty). If set, snapshots are written to this JSONL file; otherwise to stdout.
+  - `-logLevel` (string, default `info`). Present but not currently wired to change the logger level.
   - `-gracefulTimeout` (duration, default `10s`).
-  - Optional TLS hardening (can be added later): `-tls`, `-certFile`, `-keyFile`.
+  - Optional TLS hardening (not implemented yet): `-tls`, `-certFile`, `-keyFile`.
 - Validation: ensure `attributeKey != ""`, `window > 0`, `maxQueue >= 0`; fail fast with clear errors.
 
 ## Public Types and Interfaces
@@ -48,57 +49,34 @@ type Config struct {
     AttributeKey          string
     Window                time.Duration
     MaxQueue              int
-    OutputFormat          string
-    LogLevel              string
+    OutputFormat          string // json only, currently ignored
+    OutputFile            string // optional JSONL file path
+    LogLevel              string // currently ignored; bridged via otelslog
     GracefulTimeout       time.Duration
 }
 
-type Event struct {
-    Value string
-}
+type Event struct { Value string }
 
+// Matches internal/sink.Snapshot (Unix millis for window times).
 type Snapshot struct {
-    WindowStart time.Time
-    WindowEnd   time.Time
+    WindowStart  int64
+    WindowEnd    int64
     AttributeKey string
-    Counts      map[string]uint64
-    Total       uint64
-    Dropped     uint64
+    Counts       map[string]uint64
+    Total        uint64
+    Dropped      uint64
 }
 
-type Sink interface {
-    Publish(ctx context.Context, s Snapshot) error
-}
+type Sink interface { Publish(ctx context.Context, s Snapshot) error }
 
-// Service is instance-scoped; no package-level mutable state.
-type Service struct {
-    cfg      Config
-    logger   *slog.Logger
-    tracer   oteltrace.Tracer
-    meter    otelmetric.Meter
-    // Metrics instruments
-    logsReceived   otelmetric.Int64Counter
-    logsProcessed  otelmetric.Int64Counter
-    logsDropped    otelmetric.Int64Counter
-    flushes        otelmetric.Int64Counter
-    queueDepth     otelmetric.Int64ObservableGauge
+// Service (orchestrator) holds instance-scoped deps and instruments.
+// See internal/orchestrator for the concrete type.
 
-    agg      *Aggregator
-    sink     Sink
-}
-
+// Aggregator supports single events and batched enqueues.
 type Aggregator struct {
-    in          chan Event
-    window      time.Duration
-    sink        Sink
-    logger      *slog.Logger
-    // Owned by the goroutine only
-    counts      map[string]uint64
-    total       uint64
-    dropped     uint64
-    nowFn       func() time.Time
-    stop        chan struct{}
-    done        chan struct{}
+    in      chan Event
+    inBatch chan []string
+    // ... windowing fields, counters, nowFn, done, etc.
 }
 ```
 
@@ -131,34 +109,22 @@ type Aggregator struct {
 
 ## Sink (stdout)
 
-- Interface allows easy testability; production impl prints one JSON line per window with:
-  ```json
-  {
-    "ts": "2025-01-01T00:00:00Z",
-    "window_start": "...",
-    "window_end": "...",
-    "attribute_key": "foo",
-    "counts": {"bar":1, "baz":2, "qux":1, "unknown":1},
-    "total": 5,
-    "dropped": 0
-  }
-  ```
-- `outputFormat=log` option can format a compact key=value line if desired.
+- Interface allows easy testability; production impl prints one JSON line per window with fields matching `internal/sink.Snapshot`:
+  {"window_start":1710000000000,"window_end":1710000005000,"attribute_key":"foo","counts":{"alpha":25,"beta":10},"total":35,"dropped":0}
+- `outputFormat` flag exists but only JSON is implemented at the moment.
 
 ## Metrics & Logging
 
 - Metrics (OTel):
-  - `logs.received_total` (counter): per LogRecord seen.
-  - `logs.processed_total` (counter): successfully enqueued/aggregated.
-  - `logs.dropped_total` (counter): dropped due to backpressure.
-  - `flushes_total` (counter): number of window flushes.
-  - `queue_depth` (observable gauge): `len(in)` during collection.
-  - (Optional) `flush_duration_ms` (histogram): time to publish.
-- Logging (slog):
-  - Startup config summary.
-  - Aggregator flush summaries and warnings when drops > 0.
-  - Server start/stop and errors.
-  - All variables and state must be instance-level (no package-level mutable globals). The application will run a single instance, but using instance-scoped state makes the code testable and composable.
+  - `com.dash0.homeexercise.logs.received` (counter): per LogRecord seen.
+  - `com.dash0.homeexercise.logs.processed` (counter): successfully enqueued/aggregated.
+  - `com.dash0.homeexercise.logs.dropped` (counter): dropped due to backpressure.
+  - `com.dash0.homeexercise.flushes` (counter): number of window flushes.
+  - `com.dash0.homeexercise.publish.failed` (counter): failed snapshot publishes.
+  - Note: queue depth gauge is not implemented currently.
+- Logging (slog via otelslog bridge):
+  - Startup/shutdown, aggregator activity, and Export summaries.
+  - All variables and state are instance-level (no package-level mutable globals).
 
 ## Extensibility
 
@@ -185,16 +151,15 @@ type Aggregator struct {
 - Prefer pre-sized maps when the number of distinct values is known/predictable (start small and grow automatically; avoid premature optimization).
 - Use `bufconn` for fast integration tests; use `-race` locally.
 
-## Package Layout (testable, minimal changes)
+## Package Layout (current)
 
-- If allowed to refactor structure:
-  - `cmd/otlp-log-processor/main.go` (wires config + service)
-  - `internal/service` (Service, Export implementation)
-  - `internal/attr` (extraction helpers)
-  - `internal/agg` (aggregator)
-  - `internal/sink` (stdout sink + test fake) - this must 
-  - `internal/otel` (setup)
-- If keeping current layout, still implement the same abstractions but keep files at repo root. Key requirement remains: no package-level mutable state.
+- `cmd/otlp-log-processor/main.go`: Entrypoint and server wiring.
+- `internal/config`: Flags and config.
+- `internal/otel`: OpenTelemetry setup.
+- `internal/orchestrator`: Instance-scoped service, metrics, lifecycle.
+- `internal/otlp`: OTLP Logs service (Export) and helpers.
+- `internal/aggregator`: Windowed aggregator.
+- `internal/sink`: JSON sink (stdout or file).
 
 ## Testing Strategy
 
@@ -250,9 +215,9 @@ type Aggregator struct {
 ## Acceptance Criteria
 
 - Instance-level state only (no package-level mutable variables for service logic or meters/instruments).
-- For a sample input (as in README), per-window output matches expected counts including `"unknown"`.
+- For a sample input (as in README), per-window JSONL output matches expected counts including `"unknown"`; `window_start/window_end` are Unix millis.
 - Under queue saturation, `PartialSuccess.RejectedLogRecords` reflects drops and `logs.dropped_total` increments.
-- `go test ./...` passes; integration test verifies sink snapshot.
+- `go test ./...` passes; integration and unit tests verify extractor, aggregator, and export behavior.
 - Graceful shutdown flushes final snapshot.
 - Logs and metrics provide enough detail to operate the service.
 
