@@ -49,7 +49,7 @@ func (l *logsServiceServer) Export(ctx context.Context, request *collogspb.Expor
 				receivedCount++
 
 				val, ok := ExtractAttrs(l.orchestratorSvc.AttributeKey(), rec.GetAttributes(), scopeAttrs, resAttrs)
-				if !ok || val == "" {
+				if !ok {
 					val = "unknown"
 				}
 

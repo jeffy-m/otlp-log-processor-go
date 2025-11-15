@@ -104,21 +104,24 @@ func (a *Aggregator) Start(ctx context.Context) {
 
 		for {
 			select {
-			case <-ctx.Done():
-				a.flush(windowStart, a.nowFn().UnixMilli())
-				return
-			case ev := <-a.in:
-				a.total++
-				a.counts[ev.Value]++
-			case vals := <-a.inBatch:
-				a.total += uint64(len(vals))
-				for _, v := range vals {
-					a.counts[v]++
-				}
-			case <-ticker.C:
-				windowEnd := a.nowFn().UnixMilli()
-				a.flush(windowStart, windowEnd)
-				windowStart = windowEnd
+				case <-ctx.Done():
+					a.flush(windowStart, a.nowFn().UnixMilli())
+					return
+				case <-ticker.C:
+					windowEnd := a.nowFn().UnixMilli()
+					a.flush(windowStart, windowEnd)
+					windowStart = windowEnd
+				default:
+					select {
+						case ev := <-a.in:
+							a.total++
+							a.counts[ev.Value]++
+						case vals := <-a.inBatch:
+							a.total += uint64(len(vals))
+							for _, v := range vals {
+								a.counts[v]++
+							}
+					}
 			}
 		}
 	}()

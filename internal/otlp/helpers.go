@@ -3,6 +3,7 @@ package otlp
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
